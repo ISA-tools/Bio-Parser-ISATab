@@ -199,8 +199,7 @@ sub parse {
   while (my $row = $self->tsv_parser->getline($i_fh)) {
     if (!defined $row->[0] || $row->[0] eq '' || $row->[0] =~ /^#/) {
       # this is a comment or an empty line
-    }
-    elsif (defined $section_headings{$row->[0]}) {
+    } elsif (defined $section_headings{$row->[0]}) {
       # we just moved into a new section
       # process previous table (warning: end of loop code duplication)
       if (defined $current_section && @$table) {
@@ -238,6 +237,10 @@ sub parse {
   $self->create_lookup($isa, 'ontologies', 'ontology_lookup', 'term_source_name');
   foreach my $study (@{$isa->{studies}}) {
     $self->create_lookup($study, 'study_protocols', 'study_protocol_lookup', 'study_protocol_name');
+    foreach my $protocol_name (keys %{$study->{study_protocol_lookup}}) {
+      my $protocol = $study->{study_protocol_lookup}{$protocol_name};
+      $self->create_lookup($protocol, 'study_protocol_parameters', 'study_protocol_parameter_lookup', 'study_protocol_parameter_name');
+    }
     $self->create_lookup($study, 'study_factors', 'study_factor_lookup', 'study_factor_name');
   }
 
@@ -246,16 +249,14 @@ sub parse {
   #
 
   foreach my $study (@{$isa->{studies}}) {
-    my $study_file = $self->directory()."/".$study->{study_file_name};
-    croak "can't find study file: $study_file for study $study->{study_identifier}"
-      unless (-e $study_file);
-    $study->{sources} = $self->parse_study_or_assay($study_file, $isa)->{sources};
+    $study->{sources} = $self->parse_study_or_assay($study->{study_file_name}, $isa)->{sources};
     foreach my $assay (@{$study->{study_assays}}) {
-      my $assay_file = $self->directory()."/".$assay->{study_assay_file_name};
-      my $assaydata = $self->parse_study_or_assay($assay_file, $isa);
+      my $assaydata = $self->parse_study_or_assay($assay->{study_assay_file_name}, $isa);
       $assay->{sources} = $assaydata->{sources} if ($assaydata->{sources});
       $assay->{samples} = $assaydata->{samples} if ($assaydata->{samples});
     }
+    # create a lookup with keys like 'field collection', 'phenotype assay'
+    $self->create_lookup($study, 'study_assays', 'study_assay_lookup', 'study_assay_measurement_type');
   }
 
   return $isa;
@@ -289,26 +290,29 @@ my %reusable_node_types = ('Source Name' => 'sources',
 #
 # these are columns which don't
 #
-my %non_reusable_node_types = ('Data Transformation Name' => 'data_transformation',
-			       'Raw Data File' => 'raw_data_file',
-			       'Image File' => 'image_file',
+# note, values (used as keys in the $isa data structure) have been pluralised except for the array design
+#
+
+my %non_reusable_node_types = ('Data Transformation Name' => 'data_transformations',
+			       'Raw Data File' => 'raw_data_files',
+			       'Image File' => 'image_files',
 			       'Array Design File' => 'array_design_file',
 			       'Array Design REF' => 'array_design_ref',
 ##?			       'Array Design File REF' => 'array_design_file_ref',
-			       'Derived Data File' => 'derived_data_file',
-			       'Array Data File' => 'array_data_file',
-			       'Derived Array Data File' => 'derived_array_data_file',
-			       'Array Data Matrix File' => 'array_data_matrix_file',
-			       'Derived Array Data Matrix File' => 'derived_array_data_matrix_file',
-			       'Spot Picking File' => 'spot_picking_file',
-			       'Raw Spectral Data File' => 'raw_spectral_data_file',
-			       'Derived Spectral Data File' => 'derived_spectral_data_file',
-			       'Peptide Assignment File' => 'peptide_assignment_file',
-			       'Protein Assignment File' => 'protein_assignment_file',
-			       'Post Translational Modification Assignment File' => 'post_translational_modification_assignment_file',
-			       'Free Induction Decay Data File' => 'free_induction_decay_data_file',
-			       'Acquisition Parameter Data File' => 'acquisition_parameter_data_file',
-			       'Metabolite Assignment File' => 'metabolite_assignment_file',
+			       'Derived Data File' => 'derived_data_files',
+			       'Array Data File' => 'array_data_files',
+			       'Derived Array Data File' => 'derived_array_data_files',
+			       'Array Data Matrix File' => 'array_data_matrix_files',
+			       'Derived Array Data Matrix File' => 'derived_array_data_matrix_files',
+			       'Spot Picking File' => 'spot_picking_files',
+			       'Raw Spectral Data File' => 'raw_spectral_data_files',
+			       'Derived Spectral Data File' => 'derived_spectral_data_files',
+			       'Peptide Assignment File' => 'peptide_assignment_files',
+			       'Protein Assignment File' => 'protein_assignment_files',
+			       'Post Translational Modification Assignment File' => 'post_translational_modification_assignment_files',
+			       'Free Induction Decay Data File' => 'free_induction_decay_data_files',
+			       'Acquisition Parameter Data File' => 'acquisition_parameter_data_files',
+			       'Metabolite Assignment File' => 'metabolite_assignment_files',
 );
 
 
@@ -320,6 +324,9 @@ sub parse_study_or_assay {
   my $headers;
   my $n;
   my $node_type_cache = { }; # node_type -> name -> { ... } # allows pooling
+
+  $study_file = $self->directory()."/".$study_file;
+
   open(my $s_fh, $study_file) or croak "couldn't open $study_file";
   while (my $row = $self->tsv_parser->getline($s_fh)) {
     #carp join("\t", @$row); #debugging
@@ -352,9 +359,9 @@ sub parse_study_or_assay {
 	    # now set the current node to be this child
 	    $current_node = $current_node->{$node_type}{$value};
 	    $last_biological_material = $current_node if ($node_type =~ /^(source|sample|extract|labeled)/); # hack alert!
-	    undef $current_attribute;
-	    undef $current_protocol;
 	  }
+	  undef $current_attribute;
+	  undef $current_protocol;
 	} elsif ($non_reusable_node_types{$header}) {
 	  # need step down one level into the DAG
 	  $node_type = $non_reusable_node_types{$header};
@@ -364,43 +371,41 @@ sub parse_study_or_assay {
 	    $current_node->{$node_type}{$value} = { };
 	    # now set the current node to be this child
 	    $current_node = $current_node->{$node_type}{$value};
-	    undef $current_attribute;
-	    undef $current_protocol;
 	  }
+	  undef $current_attribute;
+	  undef $current_protocol;
+	} elsif ($header =~ /^(Characteristics|Factor Value|Comment)\s*\[(.+)\]\s*$/) {
+	  my $key = lcu($1);
+	  my $type = $2;
+	  $key =~ s/s?$/s/; # make plural lowercase underscored, e.g. factor_values
+
+	  # factor values need special treatment (don't attach them to files and other non-reusable nodes)
+	  my $node_to_annotate = $key eq 'factor_values' ? $last_biological_material : $current_node;
+
+	  check_and_set(\$node_to_annotate->{$key}{$type}{value}, $value) if (length($value));
+	  $current_attribute = $node_to_annotate->{$key}{$type};
+	} elsif ($header eq 'Material Type' || $header eq 'Label') {
+	  check_and_set(\$current_node->{lcu($header)}{value}, $value) if (length($value));
+	  $current_attribute = $current_node->{lcu($header)};
+	} elsif ($header eq 'Unit' && $current_attribute) {
+	  check_and_set(\$current_attribute->{unit}{value}, $value) if (length($value));
+	  $current_attribute = $current_attribute->{unit};
+	} elsif ($header eq 'Protocol REF' && length($value)) {
+	  if (!defined $current_node->{protocols}{$value}) {
+	    my $rank = 1 + keys %{$current_node->{protocols}};
+	    $current_node->{protocols}{$value} = { rank => $rank };
+	  }
+	  $current_protocol = $current_node->{protocols}{$value};
+	} elsif ($header =~ /^(Parameter Value)\s*\[(.+)\]\s*$/ && $current_protocol) {
+	  check_and_set(\$current_protocol->{parameter_values}{$2}{value}, $value) if (length($value));
+	  $current_attribute = $current_protocol->{parameter_values}{$2};
+	} elsif ($current_attribute && length($value)) {
+	  check_and_set(\$current_attribute->{lcu($header)}, $value);
 	} elsif (length($value)) {
-
-	  if ($header =~ /^(Characteristics|Factor Value|Comment)\s*\[(.+)\]\s*$/) {
-	    my $key = lcu($1);
-	    my $type = $2;
-	    $key =~ s/s?$/s/; # make plural lowercase underscored, e.g. factor_values
-
-	    # factor values need special treatment (don't attach them to files and other non-reusable nodes)
-	    my $node_to_annotate = $key eq 'factor_values' ? $last_biological_material : $current_node;
-
-	    check_and_set(\$node_to_annotate->{$key}{$type}{value}, $value);
-	    $current_attribute = $node_to_annotate->{$key}{$type};
-	  } elsif ($header eq 'Material Type' || $header eq 'Label') {
-	    check_and_set(\$current_node->{lcu($header)}{value}, $value);
-	    $current_attribute = $current_node->{lcu($header)};
-	  } elsif ($header eq 'Unit' && $current_attribute) {
-	    check_and_set(\$current_attribute->{unit}{value}, $value);
-	    $current_attribute = $current_attribute->{unit};
-	  } elsif ($header eq 'Protocol REF') {
-	    if (!defined $current_node->{protocols}{$value}) {
-	      my $rank = 1 + keys %{$current_node->{protocols}};
-	      $current_node->{protocols}{$value} = { rank => $rank };
-	    }
-	    $current_protocol = $current_node->{protocols}{$value};
-	  } elsif ($header =~ /^(Parameter Value)\s*\[(.+)\]\s*$/ && $current_protocol) {
-	    check_and_set(\$current_protocol->{parameter_values}{$2}{value}, $value);
-	    $current_attribute = $current_protocol->{parameter_values}{$2};
-	  } elsif ($current_attribute) {
-	    #
-	    check_and_set(\$current_attribute->{lcu($header)}, $value);
-	    check_and_set(\$current_attribute->{lcu($header)}, $value);
-	  } else {
-	    carp "unexpected condition at $header => $value (could be legitimate)";
-	  }
+	  # this warning is really just for debugging - we don't want to let any non-empty cells through the net
+	  # carp "probable valueless annotation of $headers->[$i-1] qualified by $header => $value (column $i of $study_file)";
+	} else {
+	  # it was just an empty cell
 	}
 
       }
@@ -466,7 +471,7 @@ sub process_table {
 
 	if (defined (my $plural_key = $semicolon_delimited{$row->[0]})) {
 	  # this row may need semicolon splitting
-	  my @values = split /\s*;\s*/, $row->[$i+1];
+	  my @values = split /\s*;\s*/, ($row->[$i+1] || ''), -1;
 	  $num_values_seen{$plural_key}{scalar @values} = 1 if (@values > 0);
 	  if ($plural_key =~ /initials$/) {
 	    $isa_ptr->{$section_name}[$i]{$plural_key} = \@values;
@@ -552,7 +557,7 @@ sub create_lookup {
   foreach my $item (@{$hashref->{$arraykey}}) {
     croak "could not create $lookupkey from $arraykey due to missing $itemkey\n" unless ($item->{$itemkey});
     $hashref->{$lookupkey}{$item->{$itemkey}} = $item;
-  } 
+  }
 }
 
 
